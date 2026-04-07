@@ -8,3 +8,4 @@ html2image
 jinja2
 curl_cffi
 aiohttp
+playwright
