@@ -1,0 +1,10 @@
+python-telegram-bot>=20.0
+httpx
+requests
+beautifulsoup4
+fake-useragent
+Pillow
+html2image
+jinja2
+curl_cffi
+aiohttp
