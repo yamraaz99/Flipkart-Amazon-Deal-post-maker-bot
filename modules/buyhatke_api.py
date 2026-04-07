@@ -50,6 +50,10 @@ async def api_compare(pid: str, pos: int) -> list:
                 "https://searchnew.bitbns.com/buyhatke/comparePrice",
                 params={"PID": pid, "pos": pos, "trst": 1},
             )
+            # Guard: empty or non-JSON response
+            if not r.text or not r.text.strip():
+                log.warning("api_compare: empty response")
+                return []
             return r.json().get("data", [])
     except Exception as e:
         log.error(f"api_compare: {e}")
