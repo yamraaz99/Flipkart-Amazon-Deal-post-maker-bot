@@ -44,37 +44,63 @@ async def api_thunder(pid: str, pos: int) -> dict:
 
 
 async def api_compare(pid: str, pos: int) -> list:
+    url = "https://searchnew.bitbns.com/buyhatke/comparePrice"
+    params = {"PID": pid, "pos": pos, "trst": 1}
+
     try:
-        async with httpx.AsyncClient(timeout=10) as c:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
             r = await c.get(
-                "https://searchnew.bitbns.com/buyhatke/comparePrice",
-                params={"PID": pid, "pos": pos, "trst": 1},
+                url,
+                params=params,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/122.0.0.0 Safari/537.36"
+                    ),
+                    "Accept": "application/json, text/plain, */*",
+                    "Referer": "https://buyhatke.com/",
+                },
             )
-            # Guard: empty or non-JSON response
-            if not r.text or not r.text.strip():
-                log.warning("api_compare: empty response")
+
+            if r.status_code != 200:
+                log.warning(
+                    f"api_compare: HTTP {r.status_code} for pid={pid}, pos={pos}, "
+                    f"body={r.text[:200]!r}"
+                )
                 return []
-            return r.json().get("data", [])
+
+            text = (r.text or "").strip()
+            if not text:
+                log.warning(f"api_compare: empty response for pid={pid}, pos={pos}")
+                return []
+
+            ctype = r.headers.get("content-type", "")
+            if "json" not in ctype.lower():
+                log.warning(
+                    f"api_compare: non-JSON content-type={ctype!r} "
+                    f"for pid={pid}, pos={pos}, body={text[:200]!r}"
+                )
+                return []
+
+            try:
+                data = r.json()
+            except Exception as je:
+                log.warning(
+                    f"api_compare: invalid JSON for pid={pid}, pos={pos}, "
+                    f"body={text[:200]!r}, error={je}"
+                )
+                return []
+
+            result = data.get("data", [])
+            return result if isinstance(result, list) else []
+
     except Exception as e:
         log.error(f"api_compare: {e}")
         return []
 
 
 async def api_price_history(pid: str, pos: int) -> int | None:
-    """
-    Fetch price history from BuyHatke graph API and return the
-    average (mean) of all recorded prices, rounded to nearest ₹.
-
-    API  : https://graph.bitbns.com/getPredictedData.php
-    Params: type=log, indexName=interest_centers, logName=info,
-            mainFL=1, pos=<pos>, pid=<pid>
-
-    Response format (plain text, no JSON):
-        2025-05-30 16:17:05~299~*~*2025-05-31 02:25:55~299~*~* ...
-        &~&~<min>&~&~<max>
-    Each record is separated by ~*~* and has the shape:
-        YYYY-MM-DD HH:MM:SS~<price>
-    """
     url = "https://graph.bitbns.com/getPredictedData.php"
     params = {
         "type": "log",
@@ -84,42 +110,58 @@ async def api_price_history(pid: str, pos: int) -> int | None:
         "pos": str(pos),
         "pid": pid,
     }
+
     try:
-        async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get(url, params=params)
-            text = r.text.strip()
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+            r = await c.get(
+                url,
+                params=params,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/122.0.0.0 Safari/537.36"
+                    )
+                },
+            )
+            if r.status_code != 200:
+                log.warning(
+                    f"api_price_history: HTTP {r.status_code} for pid={pid}, pos={pos}, "
+                    f"body={r.text[:200]!r}"
+                )
+                return None
 
-        if not text:
-            return None
+            text = (r.text or "").strip()
+            if not text:
+                log.warning(f"api_price_history: empty response for pid={pid}, pos={pos}")
+                return None
 
-        # Strip trailing metadata  &~&~min&~&~max
-        data_part = text.split("&~&~")[0]
+            data_part = text.split("&~&~")[0]
 
-        # Each entry: "YYYY-MM-DD HH:MM:SS~<price>"
-        prices = []
-        for record in data_part.split("~*~*"):
-            record = record.strip()
-            if not record:
-                continue
-            # Price is the second token after splitting on "~"
-            parts = record.split("~")
-            if len(parts) >= 2:
+            prices = []
+            for record in data_part.split("~*~*"):
+                record = record.strip()
+                if not record:
+                    continue
+
+                parts = record.split("~")
+                if len(parts) < 2:
+                    continue
+
                 try:
-                    price_val = int(parts[1])
+                    price_val = int(parts[1].strip())
                     if price_val > 0:
                         prices.append(price_val)
                 except ValueError:
                     continue
 
-        if not prices:
-            return None
+            if not prices:
+                log.warning(f"api_price_history: no valid prices for pid={pid}, pos={pos}")
+                return None
 
-        avg = round(sum(prices) / len(prices))
-        log.info(
-            f"Price history for {pid}: {len(prices)} data points, "
-            f"avg=₹{avg:,}"
-        )
-        return avg
+            avg = round(sum(prices) / len(prices))
+            log.info(f"api_price_history: pid={pid}, pos={pos}, points={len(prices)}, avg={avg}")
+            return avg
 
     except Exception as e:
         log.error(f"api_price_history: {e}")
