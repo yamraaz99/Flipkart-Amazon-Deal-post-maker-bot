@@ -6,7 +6,12 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from modules.url_handler      import resolve_url, detect_marketplace, make_clean_url
-from modules.buyhatke_api     import api_product_details, api_thunder, api_compare
+from modules.buyhatke_api     import (
+    api_product_details,
+    api_thunder,
+    api_compare,
+    api_price_history,          # ← new
+)
 from modules.scrapers          import scrape_amazon, scrape_flipkart
 from modules.groq_ai           import shorten_title_groq
 from modules.price_calculator  import calc_breakdown
@@ -45,22 +50,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         product_url = make_clean_url(mkt, pid, resolved)
         await status.edit_text("🔍 Fetching data...")
 
-        # Phase 1: parallel API calls
-        details, thunder, compare = await asyncio.gather(
+        # ── Phase 1: parallel API calls ───────────────────────────────────────
+        # Four concurrent calls: details, thunder, compare, price_history
+        details, thunder, compare, regular_price = await asyncio.gather(
             api_product_details(resolved),
             api_thunder(pid, pos),
             api_compare(pid, pos),
+            api_price_history(pid, pos),    # ← new
             return_exceptions=True,
         )
 
-        if isinstance(details, Exception): details = {}
-        if isinstance(thunder, Exception): thunder = {}
-        if isinstance(compare, Exception): compare = []
+        if isinstance(details, Exception):       details       = {}
+        if isinstance(thunder, Exception):       thunder       = {}
+        if isinstance(compare, Exception):       compare       = []
+        if isinstance(regular_price, Exception): regular_price = None
 
         raw_title = details.get("prod") or details.get("title") or "Product"
         await status.edit_text("🛒 Scraping & preparing...")
 
-        # Phase 2: parallel scrape + title shorten
+        # ── Phase 2: parallel scrape + title shorten ──────────────────────────
         scrape_fn = scrape_amazon if mkt == "amazon" else scrape_flipkart
         scraped_result, short_title = await asyncio.gather(
             asyncio.to_thread(scrape_fn, product_url),
@@ -70,8 +78,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         if isinstance(scraped_result, Exception):
             log.error(f"Scrape failed: {scraped_result}")
-            scraped_result = {"current_price": None, "mrp": None,
-                              "coupon": None, "bank_offers": []}
+            scraped_result = {
+                "current_price": None, "mrp": None,
+                "coupon": None, "bank_offers": [],
+            }
         if isinstance(short_title, Exception):
             log.warning(f"Title shorten failed: {short_title}")
             short_title = raw_title
@@ -87,17 +97,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             mrp = price
 
         avg_p = thunder.get("avg", 0)
-        bd    = calc_breakdown(price, mrp, scraped.get("coupon"), scraped.get("bank_offers", []))
+        bd    = calc_breakdown(
+            price, mrp,
+            scraped.get("coupon"),
+            scraped.get("bank_offers", []),
+        )
 
         await status.edit_text("🎨 Generating deal card...")
 
-        deal_img = generate_deal_image(image_url, bd, scraped.get("bank_offers", []), marketplace=mkt)
-        caption  = format_caption(short_title, product_url, bd, avg_p)
+        deal_img = generate_deal_image(
+            image_url, bd,
+            scraped.get("bank_offers", []),
+            marketplace=mkt,
+        )
+
+        caption = format_caption(
+            short_title,
+            product_url,
+            bd,
+            avg_p,
+            regular_price=regular_price,   # ← new
+        )
 
         if deal_img:
-            await msg.reply_photo(photo=deal_img, caption=caption)
+            await msg.reply_photo(
+                photo=deal_img,
+                caption=caption,
+                parse_mode="HTML",          # ← needed for bold/italic tags
+            )
         else:
-            await msg.reply_text(caption, disable_web_page_preview=True)
+            await msg.reply_text(
+                caption,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
 
         await status.delete()
 
