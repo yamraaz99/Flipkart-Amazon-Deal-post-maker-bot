@@ -246,3 +246,66 @@ curl_cffi          # optional but recommended for Flipkart
 | Caption format change | `modules/caption.py` |
 | New bot command | `modules/bot_handlers.py` + register in `main.py` |
 | New marketplace | New scraper function in `modules/scrapers.py`, update `url_handler.py` detection |
+
+---
+
+## Render free-tier deployment
+
+### How it works
+Render free web services require a **bound HTTP port** or they kill the process.
+`main.py` runs two coroutines concurrently via `asyncio.gather`:
+
+| Coroutine | Purpose |
+|---|---|
+| `_run_health_server()` | Tiny `aiohttp` web server on `$PORT` (default 8080) — answers `GET /` and `GET /health` with `200 OK` |
+| `_run_bot()` | Normal `python-telegram-bot` polling loop |
+
+### Deploy steps
+1. Push the repo to GitHub.
+2. On Render → **New → Web Service** → connect repo.
+3. Set **Build Command**: `pip install -r requirements.txt`
+4. Set **Start Command**: `python main.py`
+5. Add env vars: `TELEGRAM_BOT_TOKEN`, `GROQ_API_KEY`
+6. Plan: **Free**
+
+### Keep-alive (optional)
+Render free sleeps after 15 min of no HTTP traffic.  
+Use [UptimeRobot](https://uptimerobot.com) (free) to ping `https://<your-app>.onrender.com/health` every 5 minutes.
+
+---
+
+## Caption format (as of v6.1)
+
+```
+{title} for ₹{effective} (<b>Effectively</b>)     ← "Effectively" bold, HTML
+
+📌 <b>Apply ₹X off coupon + ₹Y off with BANK</b>  ← whole line bold
+
+{clean_product_url}
+
+<i>*Regular price ₹{avg}</i>                       ← italic, only shown if data available
+```
+
+`parse_mode="HTML"` is passed to every `reply_photo` / `reply_text` call.
+
+---
+
+## New API: `api_price_history(pid, pos)`
+
+**File**: `modules/buyhatke_api.py`  
+**Endpoint**: `https://graph.bitbns.com/getPredictedData.php`  
+**Params**: `type=log`, `indexName=interest_centers`, `logName=info`, `mainFL=1`, `pos`, `pid`
+
+**Response**: plain-text, records separated by `~*~*`, each record = `YYYY-MM-DD HH:MM:SS~<price>`  
+Trailing metadata `&~&~min&~&~max` is stripped before parsing.
+
+**Returns**: `int` (mean of all prices) or `None` if fetch fails.
+
+Called in Phase 1 of `handle_message` alongside the other three API calls (no extra latency — all run in parallel).
+
+### Where to edit
+| What | File |
+|---|---|
+| Change "Regular price" label text | `modules/caption.py` → last block |
+| Change how average is computed (e.g. median, last-30-days) | `modules/buyhatke_api.py` → `api_price_history()` |
+| Remove Regular price line entirely | Delete `regular_price=regular_price` arg in `bot_handlers.py` |
