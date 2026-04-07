@@ -2,6 +2,7 @@ import os
 import base64
 import logging
 import tempfile
+import shutil
 from io import BytesIO
 
 import requests
@@ -16,6 +17,50 @@ _PLACEHOLDER_B64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
     "2mP8/58BAwAI/AL+hc2rNAAAAABJRU5ErkJggg=="
 )
+
+
+def _find_chrome() -> str | None:
+    """
+    Find Chrome/Chromium executable.
+    Checks common paths + playwright's downloaded chromium.
+    """
+    # Common system paths
+    candidates = [
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+        "/snap/bin/chromium",
+        # Playwright downloads chromium here
+        os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux/chrome"),
+    ]
+
+    # Check direct paths first
+    for path in candidates:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            log.info(f"Chrome found at: {path}")
+            return path
+
+    # Glob for playwright path (has version number in folder name)
+    import glob
+    playwright_paths = glob.glob(
+        os.path.expanduser(
+            "~/.cache/ms-playwright/chromium-*/chrome-linux/chrome"
+        )
+    )
+    if playwright_paths:
+        log.info(f"Chrome found via playwright: {playwright_paths[0]}")
+        return playwright_paths[0]
+
+    # Try shutil which
+    for name in ["chromium", "chromium-browser", "google-chrome"]:
+        path = shutil.which(name)
+        if path:
+            log.info(f"Chrome found via which: {path}")
+            return path
+
+    log.error("No Chrome/Chromium executable found!")
+    return None
 
 
 def _download_image_b64(url: str):
@@ -35,7 +80,12 @@ def _fmt(n) -> str:
     return f"{int(n):,}" if n else "0"
 
 
-def generate_deal_image(image_url: str, bd: dict, bank_offers: list, marketplace: str = "amazon"):
+def generate_deal_image(
+    image_url: str,
+    bd: dict,
+    bank_offers: list,
+    marketplace: str = "amazon",
+):
     """Render deal card HTML to a cropped PNG and return a BytesIO buffer."""
     img_b64, orig_w, orig_h = _download_image_b64(image_url)
 
@@ -45,7 +95,7 @@ def generate_deal_image(image_url: str, bd: dict, bank_offers: list, marketplace
     if is_landscape:
         layout, canvas_width, img_max, pad = "stack", 750, 500, 28
     else:
-        layout, canvas_width, img_max, pad = "side",  800, 350, 28
+        layout, canvas_width, img_max, pad = "side", 800, 350, 28
 
     tpl = dict(
         layout=layout,
@@ -63,7 +113,7 @@ def generate_deal_image(image_url: str, bd: dict, bank_offers: list, marketplace
     )
 
     if marketplace == "flipkart":
-        mrp_discount    = max(0, bd["mrp"] - bd["price"])
+        mrp_discount     = max(0, bd["mrp"] - bd["price"])
         has_any_discount = (
             mrp_discount > 0
             or bd["coupon_disc"] > 0
@@ -92,19 +142,33 @@ def generate_deal_image(image_url: str, bd: dict, bank_offers: list, marketplace
         )
         html = AMAZON_DEAL_TEMPLATE.render(**tpl)
 
+    # Find Chrome executable
+    chrome_path = _find_chrome()
+
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            hti = Html2Image(
+            # Build Html2Image with chrome path if found
+            hti_kwargs = dict(
                 output_path=tmpdir,
                 custom_flags=[
                     "--no-sandbox",
                     "--disable-gpu",
                     "--disable-software-rasterizer",
                     "--hide-scrollbars",
+                    "--disable-dev-shm-usage",   # important for Render/Docker
+                    "--disable-setuid-sandbox",
                 ],
             )
+            if chrome_path:
+                hti_kwargs["browser_executable"] = chrome_path
+
+            hti   = Html2Image(**hti_kwargs)
             fname = "deal.png"
-            hti.screenshot(html_str=html, save_as=fname, size=(canvas_width, 900))
+            hti.screenshot(
+                html_str=html,
+                save_as=fname,
+                size=(canvas_width, 900),
+            )
 
             fpath  = os.path.join(tmpdir, fname)
             img    = PILImage.open(fpath).convert("RGB")
