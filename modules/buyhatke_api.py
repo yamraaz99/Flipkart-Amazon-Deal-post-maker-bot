@@ -1,3 +1,4 @@
+import re
 import json
 import logging
 import httpx
@@ -53,3 +54,69 @@ async def api_compare(pid: str, pos: int) -> list:
     except Exception as e:
         log.error(f"api_compare: {e}")
         return []
+
+
+async def api_price_history(pid: str, pos: int) -> int | None:
+    """
+    Fetch price history from BuyHatke graph API and return the
+    average (mean) of all recorded prices, rounded to nearest ₹.
+
+    API  : https://graph.bitbns.com/getPredictedData.php
+    Params: type=log, indexName=interest_centers, logName=info,
+            mainFL=1, pos=<pos>, pid=<pid>
+
+    Response format (plain text, no JSON):
+        2025-05-30 16:17:05~299~*~*2025-05-31 02:25:55~299~*~* ...
+        &~&~<min>&~&~<max>
+    Each record is separated by ~*~* and has the shape:
+        YYYY-MM-DD HH:MM:SS~<price>
+    """
+    url = "https://graph.bitbns.com/getPredictedData.php"
+    params = {
+        "type": "log",
+        "indexName": "interest_centers",
+        "logName": "info",
+        "mainFL": "1",
+        "pos": str(pos),
+        "pid": pid,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(url, params=params)
+            text = r.text.strip()
+
+        if not text:
+            return None
+
+        # Strip trailing metadata  &~&~min&~&~max
+        data_part = text.split("&~&~")[0]
+
+        # Each entry: "YYYY-MM-DD HH:MM:SS~<price>"
+        prices = []
+        for record in data_part.split("~*~*"):
+            record = record.strip()
+            if not record:
+                continue
+            # Price is the second token after splitting on "~"
+            parts = record.split("~")
+            if len(parts) >= 2:
+                try:
+                    price_val = int(parts[1])
+                    if price_val > 0:
+                        prices.append(price_val)
+                except ValueError:
+                    continue
+
+        if not prices:
+            return None
+
+        avg = round(sum(prices) / len(prices))
+        log.info(
+            f"Price history for {pid}: {len(prices)} data points, "
+            f"avg=₹{avg:,}"
+        )
+        return avg
+
+    except Exception as e:
+        log.error(f"api_price_history: {e}")
+        return None
